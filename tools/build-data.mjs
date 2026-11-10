@@ -152,29 +152,39 @@ function withBlock(code, implicit) {
 }
 const MOD_SECTIONS = new Set(['Modifiers']);
 
+const IDENTIFIED = 0x10;
+const ETHEREAL = 0x400000;
+
 const identity = (code, quality, fileIndex, flags) => Object.assign(new ItemIdentity(), {
   classId: classIdByCode.get(code), code, quality, fileIndex, flags, itemLevel: 99, format: 100,
 });
 
+// ITEM_CheckIfItemHasDurability, the gate ITEMPROP_ApplyEthereal also refuses on.
+const hasDurability = (code) => int(baseByCode.get(code)?.durability) > 0 && baseByCode.get(code)?.nodurability !== '1';
+
 /** The base array a fresh copy of this item type carries, at the min or max Defense roll. */
-function baseStats(code, end, { quality, fileIndex, own }) {
+function baseStats(code, end, { quality, fileIndex, flags, own }) {
   const b = baseByCode.get(code);
   const stats = [];
   if (!b) return stats;
   if (b.kind === 'armor') {
-    // The toolkit's own roll: `ac%` pins the base at maxac + 1.
+    // The toolkit's own roll: `ac%` pins the base at maxac + 1, and ethereal scales whatever was stored.
     const lo = new Map();
     const hi = new Map();
-    ranges.addBaseDefense(identity(code, quality, fileIndex, 16), new Map(), new Map(), lo, hi, new Map(), own.some((s) => s.id === 16));
+    ranges.addBaseDefense(identity(code, quality, fileIndex, flags), new Map(), new Map(), lo, hi, new Map(), own.some((s) => s.id === 16));
     stats.push({ id: 31, value: (end === 'low' ? lo : hi).get(31) ?? 0 });
   }
+  // The toolkit applies the ethereal 3/2 to Defense only; damage takes the same 3/2, durability halves + 1.
+  const eth = flags & ETHEREAL;
+  const dmg = (v) => (eth ? Math.floor((int(v) * 3) / 2) : int(v));
   if (b.kind === 'weapon') {
-    if (b.mindam) stats.push({ id: 21, value: int(b.mindam) }, { id: 22, value: int(b.maxdam) });
-    if (b['2handmindam']) stats.push({ id: 23, value: int(b['2handmindam']) }, { id: 24, value: int(b['2handmaxdam']) });
-    if (b.minmisdam) stats.push({ id: 159, value: int(b.minmisdam) }, { id: 160, value: int(b.maxmisdam) });
+    if (b.mindam) stats.push({ id: 21, value: dmg(b.mindam) }, { id: 22, value: dmg(b.maxdam) });
+    if (b['2handmindam']) stats.push({ id: 23, value: dmg(b['2handmindam']) }, { id: 24, value: dmg(b['2handmaxdam']) });
+    if (b.minmisdam) stats.push({ id: 159, value: dmg(b.minmisdam) }, { id: 160, value: dmg(b.maxmisdam) });
   }
-  if (b.durability && b.nodurability !== '1') {
-    stats.push({ id: 72, value: int(b.durability) }, { id: 73, value: int(b.durability) });
+  if (hasDurability(code)) {
+    const dur = eth ? Math.floor(int(b.durability) / 2) + 1 : int(b.durability);
+    stats.push({ id: 72, value: dur }, { id: 73, value: dur });
   }
   return stats;
 }
@@ -184,14 +194,14 @@ const mapToStats = (m) => [...m].map(([k, value]) => ({ id: k & 0xffff, layer: k
 const isPacked = (id) => id === 204 || (id >= 268 && id <= 303);
 
 /** Render an item at both ends of its rolls. `own` is [{id, layer, low, high}]. */
-function renderBoth({ code, quality, fileIndex, own, sections }) {
+function renderBoth({ code, quality, fileIndex, own, sections, flags = IDENTIFIED }) {
   const classId = classIdByCode.get(code);
   const tips = ['low', 'high'].map((end) => {
     const stats = own.map((s) => ({ id: s.id, layer: s.layer, value: isPacked(s.id) ? s.high : s[end] }));
     const unit = createUnit({
-      unitType: 4, classId, quality, fileIndex, itemFlags: 16, itemLevel: 99, format: 100,
+      unitType: 4, classId, quality, fileIndex, itemFlags: flags, itemLevel: 99, format: 100,
       statsLists: [
-        { stateNo: 0, flags: 0x80000000, stats: baseStats(code, end, { quality, fileIndex, own }) },
+        { stateNo: 0, flags: 0x80000000, stats: baseStats(code, end, { quality, fileIndex, flags, own }) },
         { stateNo: 0, flags: 0x40, stats },
       ],
     });
@@ -290,18 +300,53 @@ const ladderOf = (r) => {
   return b && b !== a ? `${a}-${b}` : a;
 };
 
-function ownMods(code, quality, fileIndex) {
+function ownMods(code, quality, fileIndex, flags = IDENTIFIED) {
   // The item's own sources only; the base Defense roll goes on the base array in renderBoth.
-  const rg = ranges.reconstruct(identity(code, quality, fileIndex, 16), null, null, null, true, false);
+  const rg = ranges.reconstruct(identity(code, quality, fileIndex, flags), null, null, null, true, false);
   const own = rg.stats
     .map((s) => ({ id: s.statId, layer: s.layer, low: s.low, high: s.high }))
     .filter((s) => s.low || s.high);
-  const lines = renderBoth({ code, quality, fileIndex, own, sections: new Set([...BASE_SECTIONS, ...MOD_SECTIONS]) });
-  const implicit = withBlock(code, lines.filter((l) => BASE_SECTIONS.has(l.section)).map((l) => l.text));
-  const mods = lines.filter((l) => MOD_SECTIONS.has(l.section)).map((l) => l.text);
+  const lines = renderBoth({ code, quality, fileIndex, own, flags, sections: new Set([...BASE_SECTIONS, ...MOD_SECTIONS, 'EtherealSocketed']) });
+  const base = lines.filter((l) => BASE_SECTIONS.has(l.section));
+  const implicit = withBlock(code, base.map((l) => l.text));
+  const mods = lines.filter((l) => !BASE_SECTIONS.has(l.section)).map((l) => l.text);
   for (const lv of rg.layerVaries) mods.push(layerVariesLine(lv));
   for (const c of rg.choices) mods.push(...choiceLines(code, c));
-  return { implicit, mods, problems: [...rg.outOfRange, ...rg.unattributed].length };
+  return { implicit, mods, lines, base, own, problems: [...rg.outOfRange, ...rg.unattributed].length };
+}
+
+/** The lines of `lines` that `against` doesn't already print. A fresh item spawns at full
+ *  durability, so only the max is kept. */
+function changed(lines, against) {
+  const seen = new Set(against.map((l) => l.text));
+  return lines.filter((l) => !seen.has(l.text)).map((l) => l.text.replace(/^(Durability: ).* of /, '$1'));
+}
+
+const ethereal = (code, quality, fileIndex, own) =>
+  renderBoth({ code, quality, fileIndex, own, sections: BASE_SECTIONS, flags: IDENTIFIED | ETHEREAL });
+
+/** A superior copy draws one qualityitems.txt row that admits its type; this lists what each mod
+ *  does to the base, against the copy it would otherwise be. */
+function superiorLine(code, flags, against) {
+  const table = data.qualityItems;
+  const codes = new Set();
+  let most = 0;
+  const onBase = new Set();
+  const asMods = new Set();
+  for (let row = 0; row < table.rowCount; row++) {
+    if (!ranges.superiorRowApplies(identity(code, 3, row, flags), table, row)) continue;
+    const rowCodes = [1, 2].map((n) => table.getString(row, `mod${n}code`).trim()).filter(Boolean);
+    rowCodes.forEach((c) => codes.add(c));
+    most = Math.max(most, rowCodes.length);
+    const { base, lines } = ownMods(code, 3, row, flags);
+    // Attack Rating changes no base line, so it shows as its mod.
+    const diff = changed(base, against);
+    if (diff.length) diff.forEach((t) => onBase.add(t));
+    else lines.filter((l) => MOD_SECTIONS.has(l.section)).forEach((l) => asMods.add(l.text));
+  }
+  if (!codes.size) return '';
+  const parts = [...onBase, ...asMods].join(' · ');
+  return codes.size > 1 ? `${most === 1 ? 'One' : `1-${most}`} of: ${parts}` : parts;
 }
 
 function reqLevel(code, quality, fileIndex) {
@@ -316,14 +361,20 @@ for (const r of uniqueItems) {
   const code = r.code;
   if (!code || !classIdByCode.has(code) || r.disabled === '1' || r.spawnable !== '1') continue;
   if (int(baseByCode.get(code)?.quest)) continue; // Khalim's Flail, Horadric Staff and friends
-  const { implicit, mods } = ownMods(code, 7, r._row);
+  const props = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((i) => r[`prop${i}`]).filter(Boolean);
+  const always = props.includes('ethereal');
+  const { implicit, mods, base, own } = ownMods(code, 7, r._row, always ? IDENTIFIED | ETHEREAL : IDENTIFIED);
+  // An indestructible unique never spawns ethereal unless its own `ethereal` property makes it so.
+  const alt = !always && !props.includes('indestruct') && hasDurability(code)
+    ? [['ethereal', changed(ethereal(code, 7, r._row, own), base).join(' · ')]]
+    : undefined;
   let name = str(r.index);
   if (r.index.startsWith('Crafted ')) name += ' (Crafted)';
   seenUniqueNames.set(name, (seenUniqueNames.get(name) ?? 0) + 1);
   items.push({
     q: 'u', name, base: baseName(code), type: typeName(code), tier: tierName(code),
     lvl: reqLevel(code, 7, r._row), img: artFor(code, hdUniques[hdKey(r.index)]),
-    ladder: ladderOf(r), implicit, mods,
+    ladder: ladderOf(r), implicit, alt, mods,
   });
 }
 
@@ -347,6 +398,7 @@ for (const s of sets) {
   setBonus[str(s.name)] = { pieces: pieces.map((p) => str(p.index)), partial, full };
 }
 
+// No ethereal line on set items: D2R never makes one ethereal.
 for (const r of setItems) {
   const code = r.item;
   if (!code || !classIdByCode.has(code) || !r.set) continue;
@@ -377,12 +429,18 @@ for (const [kind, rows] of [['weapon', weapons], ['armor', armor]]) {
     if (!b.code || b.spawnable !== '1' || int(b.quest) || !classIdByCode.has(b.code)) continue;
     const lines = renderBoth({ code: b.code, quality: 2, fileIndex: 0, own: [], sections: BASE_SECTIONS });
     const implicit = withBlock(b.code, lines.map((l) => l.text));
+    const eth = hasDurability(b.code) ? ethereal(b.code, 2, 0, []) : null;
+    const alt = [
+      ['ethereal', eth ? changed(eth, lines).join(' · ') : ''],
+      ['superior', superiorLine(b.code, IDENTIFIED, lines)],
+      ['superior ethereal', eth ? superiorLine(b.code, IDENTIFIED | ETHEREAL, eth) : ''],
+    ].filter(([, t]) => t);
     const sockets = int(b.gemsockets);
     if (sockets) implicit.push(`Max Sockets: ${sockets}`);
     if (b.speed && kind === 'weapon') implicit.push(`Base Speed: ${int(b.speed)}`);
     items.push({
       q: 'b', name: baseName(b.code), type: typeName(b.code), tier: tierName(b.code),
-      lvl: int(b.levelreq), img: artFor(b.code), implicit, mods: [],
+      lvl: int(b.levelreq), img: artFor(b.code), implicit, alt: alt.length ? alt : undefined, mods: [],
     });
   }
 }

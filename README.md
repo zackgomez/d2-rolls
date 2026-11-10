@@ -1,7 +1,8 @@
 # D2R Rolls
 
 Fuzzy search for Diablo II: Resurrected (Reign of the Warlock) uniques, set items and bases, showing
-every roll range. Ranges are highlighted; fixed mods are dimmer.
+every roll range. Ranges are highlighted; fixed mods are dimmer. Bases also show what an ethereal,
+superior or superior ethereal copy rolls, and uniques what an ethereal one does.
 
 Search matches item, set, base and type names plus mod text, with common shorthand (`fcr`, `ias`,
 `mf`, `ed`, `ll`, `cb`, `allres`…). Put a number in the query to find what can roll it: `37 fire res`

@@ -14,6 +14,8 @@ interface Item {
   img: string | null;
   ladder?: string;
   implicit: string[];
+  /** [label, line]: the base lines an ethereal or superior copy changes. */
+  alt?: [string, string][];
   mods: string[];
   setOwn?: Tier[];
 }
@@ -71,7 +73,7 @@ function prepLine(raw: string): Line {
 }
 
 function allLines(item: Item, sets: Record<string, SetInfo>): string[] {
-  const out = [...item.implicit, ...item.mods];
+  const out = [...item.implicit, ...(item.alt ?? []).map(([label, t]) => `${label} ${t}`), ...item.mods];
   for (const t of item.setOwn ?? []) out.push(...t.mods);
   const s = item.set ? sets[item.set] : undefined;
   if (s) {
@@ -180,6 +182,7 @@ function card(hit: Hit, sets: Record<string, SetInfo>): string {
 
   let body = '';
   if (it.implicit.length) body += `<ul class="imp">${it.implicit.map((t) => li(t)).join('')}</ul>`;
+  if (it.alt?.length) body += `<ul class="alt">${it.alt.map(([label, t]) => li(t, '', label)).join('')}</ul>`;
   if (it.mods.length) body += `<ul class="mods">${it.mods.map((t) => li(t)).join('')}</ul>`;
   if (it.setOwn?.length) {
     body += `<ul class="setb">${it.setOwn.flatMap((t) => t.mods.map((m) => li(m, '', `(${t.n} items)`))).join('')}</ul>`;
@@ -207,7 +210,7 @@ function card(hit: Hit, sets: Record<string, SetInfo>): string {
 /** Rough rendered height, so cards can go to the shortest column without measuring. */
 function estimate(it: Item, sets: Record<string, SetInfo>): number {
   const s = it.set ? sets[it.set] : undefined;
-  const lines = it.implicit.length + it.mods.length
+  const lines = it.implicit.length + (it.alt?.length ?? 0) * 2 + it.mods.length
     + (it.setOwn?.reduce((a, t) => a + t.mods.length, 0) ?? 0)
     + (s ? 2 + s.partial.reduce((a, t) => a + t.mods.length, 0) + s.full.length : 0);
   return 150 + lines * 19;
