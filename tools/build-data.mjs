@@ -24,6 +24,7 @@ const data = D2DataFiles.loadResurrected(
   path.join(RAW, 'global'),
 );
 const engine = TooltipEngine.fromData(data);
+const ranges = engine.rangesReconstructor;
 const lowApplier = new PropertyApplier(data, engine.items, engine.types, RollEnd.Low);
 const highApplier = new PropertyApplier(data, engine.items, engine.types, RollEnd.High);
 
@@ -151,12 +152,22 @@ function withBlock(code, implicit) {
 }
 const MOD_SECTIONS = new Set(['Modifiers']);
 
+const identity = (code, quality, fileIndex, flags) => Object.assign(new ItemIdentity(), {
+  classId: classIdByCode.get(code), code, quality, fileIndex, flags, itemLevel: 99, format: 100,
+});
+
 /** The base array a fresh copy of this item type carries, at the min or max Defense roll. */
-function baseStats(code, end) {
+function baseStats(code, end, { quality, fileIndex, own }) {
   const b = baseByCode.get(code);
   const stats = [];
   if (!b) return stats;
-  if (b.kind === 'armor') stats.push({ id: 31, value: int(end === 'low' ? b.minac : b.maxac) });
+  if (b.kind === 'armor') {
+    // The toolkit's own roll: `ac%` pins the base at maxac + 1.
+    const lo = new Map();
+    const hi = new Map();
+    ranges.addBaseDefense(identity(code, quality, fileIndex, 16), new Map(), new Map(), lo, hi, new Map(), own.some((s) => s.id === 16));
+    stats.push({ id: 31, value: (end === 'low' ? lo : hi).get(31) ?? 0 });
+  }
   if (b.kind === 'weapon') {
     if (b.mindam) stats.push({ id: 21, value: int(b.mindam) }, { id: 22, value: int(b.maxdam) });
     if (b['2handmindam']) stats.push({ id: 23, value: int(b['2handmindam']) }, { id: 24, value: int(b['2handmaxdam']) });
@@ -180,7 +191,7 @@ function renderBoth({ code, quality, fileIndex, own, sections }) {
     const unit = createUnit({
       unitType: 4, classId, quality, fileIndex, itemFlags: 16, itemLevel: 99, format: 100,
       statsLists: [
-        { stateNo: 0, flags: 0x80000000, stats: baseStats(code, end) },
+        { stateNo: 0, flags: 0x80000000, stats: baseStats(code, end, { quality, fileIndex, own }) },
         { stateNo: 0, flags: 0x40, stats },
       ],
     });
@@ -280,11 +291,8 @@ const ladderOf = (r) => {
 };
 
 function ownMods(code, quality, fileIndex) {
-  const identity = Object.assign(new ItemIdentity(), {
-    classId: classIdByCode.get(code), code, quality, fileIndex, flags: 16, itemLevel: 99, format: 100,
-  });
   // The item's own sources only; the base Defense roll goes on the base array in renderBoth.
-  const rg = engine.rangesReconstructor.reconstruct(identity, null, null, null, true, false);
+  const rg = ranges.reconstruct(identity(code, quality, fileIndex, 16), null, null, null, true, false);
   const own = rg.stats
     .map((s) => ({ id: s.statId, layer: s.layer, low: s.low, high: s.high }))
     .filter((s) => s.low || s.high);
